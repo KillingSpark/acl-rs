@@ -84,17 +84,43 @@ impl Acl {
         }
     }
 
+    pub fn set_for_fd(&self, fd: i32) -> Result<(), AclError> {
+        let result = unsafe { acl_sys::acl_set_fd(fd, self.raw_ptr) };
+        match result {
+            0 => Ok(()),
+            -1 => {
+                let errno = nix::errno::errno();
+                Err(AclError::Errno(nix::errno::from_i32(errno)))
+            }
+            _ => Err(AclError::UnknownReturn(result)),
+        }
+    }
+
     pub fn for_file(file_path: &std::path::PathBuf, typ: AclType) -> Result<Self, AclError> {
         use std::os::unix::ffi::OsStrExt;
         let path_bytes = file_path.as_os_str().as_bytes().to_vec();
         let path_i8 = path_bytes.into_iter().map(|x| x as i8).collect::<Vec<_>>();
-        
         let raw_ptr = unsafe { acl_sys::acl_get_file(path_i8.as_ptr(), typ.raw) };
         if raw_ptr.is_null() {
             let errno = nix::errno::errno();
             Err(AclError::Errno(nix::errno::from_i32(errno)))
         } else {
             Ok(Acl { raw_ptr })
+        }
+    }
+
+    pub fn set_for_file(&self, file_path: &std::path::PathBuf, typ: &AclType) -> Result<(), AclError> {
+        use std::os::unix::ffi::OsStrExt;
+        let path_bytes = file_path.as_os_str().as_bytes().to_vec();
+        let path_i8 = path_bytes.into_iter().map(|x| x as i8).collect::<Vec<_>>();
+        let result = unsafe { acl_sys::acl_set_file(path_i8.as_ptr(), typ.raw, self.raw_ptr) };
+        match result {
+            0 => Ok(()),
+            -1 => {
+                let errno = nix::errno::errno();
+                Err(AclError::Errno(nix::errno::from_i32(errno)))
+            }
+            _ => Err(AclError::UnknownReturn(result)),
         }
     }
 
@@ -249,7 +275,24 @@ impl AclEntry {
 
         match result {
             0 => Ok(None),
-            1 => Ok(Some(AclPermSet { raw_ptr: permset_ptr })),
+            1 => Ok(Some(AclPermSet {
+                raw_ptr: permset_ptr,
+            })),
+            -1 => {
+                let errno = nix::errno::errno();
+                Err(AclError::Errno(nix::errno::from_i32(errno)))
+            }
+            _ => Err(AclError::UnknownReturn(result)),
+        }
+    }
+
+    pub fn get_tag_type(&self) -> Result<AclTag, AclError> {
+        let mut raw = 0 as acl_sys::acl_tag_t;
+        let raw_ptr = &mut raw as *mut acl_sys::acl_tag_t;
+        let result = unsafe { acl_sys::acl_get_tag_type(self.raw_ptr, raw_ptr) };
+
+        match result {
+            0 => Ok(AclTag { raw }),
             -1 => {
                 let errno = nix::errno::errno();
                 Err(AclError::Errno(nix::errno::from_i32(errno)))
