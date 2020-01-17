@@ -2,34 +2,144 @@
 mod tests {
     #[test]
     fn it_works() {
-        assert_eq!(2 + 2, 4);
+        use crate::*;
+        let mut acl = Acl::init(10).unwrap();
+        assert_eq!(acl.valid().unwrap(), Some(nix::errno::Errno::EINVAL));
+
+        let mut entry = acl.create_entry().unwrap();
+        let tag = AclTag::UserObj;
+        entry.set_tag_type(&tag).unwrap();
+        let mut permset = entry.get_permset().unwrap();
+        permset.add_perm(AclPerm::Read).unwrap();
+
+        assert_eq!(entry.get_tag_type().unwrap(), tag);
+        let mut entry = acl.create_entry().unwrap();
+        let tag = AclTag::GroupObj;
+        entry.set_tag_type(&tag).unwrap();
+        let mut permset = entry.get_permset().unwrap();
+        permset.add_perm(AclPerm::Write).unwrap();
+
+        assert_eq!(entry.get_tag_type().unwrap(), tag);
+        let mut entry = acl.create_entry().unwrap();
+        let tag = AclTag::Other;
+        entry.set_tag_type(&tag).unwrap();
+        let mut permset = entry.get_permset().unwrap();
+        permset.add_perm(AclPerm::Execute).unwrap();
+
+        assert_eq!(entry.get_tag_type().unwrap(), tag);
+        assert_eq!(acl.valid().unwrap(), None);
+
+        let path = std::path::PathBuf::from("./file_to_test_acls");
+        if !path.exists() {
+            std::fs::File::create(&path).unwrap();
+        }
+        acl.set_for_file(&path, &AclType::TypeAccess).unwrap();
+
+        let new_acl = Acl::for_file(&path, &AclType::TypeAccess).unwrap();
+        std::fs::remove_file(&path).unwrap();
+
+        let entry1 = new_acl.get_entry(&EntryId::FirstEntry).unwrap().unwrap();
+        let _permset1 = entry1.get_permset().unwrap();
+        // TODO check those permsets. I dont know how that works. Linux has an extension "acl_get_perm" but thats not exposed by acl_sys?
+        
+        let entry2 = new_acl.get_entry(&EntryId::NextEntry).unwrap().unwrap();
+        let _permset2 = entry2.get_permset().unwrap();
+
+        let entry3 = new_acl.get_entry(&EntryId::NextEntry).unwrap().unwrap();
+        let _permset3 = entry3.get_permset().unwrap();
+
+        let err_entry = new_acl.get_entry(&EntryId::NextEntry).unwrap();
+        assert_eq!(err_entry, None);
+
+        let new_alc_str = String::from_utf8(new_acl.to_text().unwrap()).unwrap();
+        assert_eq!("user::r--\ngroup::-w-\nother::--x\n", &new_alc_str);
     }
 }
 
 extern crate acl_sys;
 extern crate nix;
 
+#[derive(PartialEq, Eq, Debug)]
 pub struct AclEntry {
     raw_ptr: acl_sys::acl_entry_t,
     // if the parent acl was moved this has to become invalid
     is_valid: std::cell::RefCell<bool>,
 }
 
-pub struct AclPerm {
-    raw: acl_sys::acl_perm_t,
+pub enum AclPerm {
+    Read,
+    Write,
+    Execute,
 }
+
+impl AclPerm {
+    pub fn to_raw(&self) -> u32 {
+        match self {
+            AclPerm::Read => acl_sys::ACL_READ,
+            AclPerm::Write => acl_sys::ACL_WRITE,
+            AclPerm::Execute => acl_sys::ACL_EXECUTE,
+        }
+    }
+}
+
 pub struct AclPermSet {
     raw_ptr: acl_sys::acl_permset_t,
     // if the parent acl was moved this has to become invalid
     is_valid: std::cell::RefCell<bool>,
 }
 
-pub struct AclTag {
-    raw: acl_sys::acl_tag_t,
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum AclType {
+    TypeAccess,
+    TypeDefault,
 }
-pub struct AclType {
-    raw: acl_sys::acl_type_t,
+
+impl AclType {
+    pub fn to_raw(&self) -> u32 {
+        match self {
+            AclType::TypeAccess => acl_sys::ACL_TYPE_ACCESS,
+            AclType::TypeDefault => acl_sys::ACL_TYPE_DEFAULT,
+        }
+    }
 }
+
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum AclTag {
+    UserObj,
+    User,
+    GroupObj,
+    Group,
+    Mask,
+    Other,
+    Invalid,
+}
+
+impl AclTag {
+    pub fn to_raw(&self) -> i32 {
+        match self {
+            AclTag::UserObj => acl_sys::ACL_USER_OBJ,
+            AclTag::User => acl_sys::ACL_USER,
+            AclTag::GroupObj => acl_sys::ACL_GROUP_OBJ,
+            AclTag::Group => acl_sys::ACL_GROUP,
+            AclTag::Mask => acl_sys::ACL_MASK,
+            AclTag::Other => acl_sys::ACL_OTHER,
+            AclTag::Invalid => acl_sys::ACL_UNDEFINED_TAG,
+        }
+    }
+    pub fn from_raw(raw: i32) -> Self {
+        match raw {
+            acl_sys::ACL_USER_OBJ => AclTag::UserObj,
+            acl_sys::ACL_USER => AclTag::User,
+            acl_sys::ACL_GROUP_OBJ => AclTag::GroupObj,
+            acl_sys::ACL_GROUP => AclTag::Group,
+            acl_sys::ACL_MASK => AclTag::Mask,
+            acl_sys::ACL_OTHER => AclTag::Other,
+            _ => AclTag::Invalid,
+        }
+    }
+}
+
+#[derive(Debug)]
 pub struct Acl {
     raw_ptr: acl_sys::acl_t,
 
@@ -141,11 +251,11 @@ impl Acl {
         }
     }
 
-    pub fn for_file(file_path: &std::path::PathBuf, typ: AclType) -> Result<Self, AclError> {
+    pub fn for_file(file_path: &std::path::PathBuf, typ: &AclType) -> Result<Self, AclError> {
         use std::os::unix::ffi::OsStrExt;
         let path_bytes = file_path.as_os_str().as_bytes().to_vec();
         let path_i8 = path_bytes.into_iter().map(|x| x as i8).collect::<Vec<_>>();
-        let raw_ptr = unsafe { acl_sys::acl_get_file(path_i8.as_ptr(), typ.raw) };
+        let raw_ptr = unsafe { acl_sys::acl_get_file(path_i8.as_ptr(), typ.to_raw()) };
         if raw_ptr.is_null() {
             let errno = nix::errno::errno();
             Err(AclError::Errno(nix::errno::from_i32(errno)))
@@ -165,7 +275,7 @@ impl Acl {
         use std::os::unix::ffi::OsStrExt;
         let path_bytes = file_path.as_os_str().as_bytes().to_vec();
         let path_i8 = path_bytes.into_iter().map(|x| x as i8).collect::<Vec<_>>();
-        let result = unsafe { acl_sys::acl_set_file(path_i8.as_ptr(), typ.raw, self.raw_ptr) };
+        let result = unsafe { acl_sys::acl_set_file(path_i8.as_ptr(), typ.to_raw(), self.raw_ptr) };
         match result {
             0 => Ok(()),
             -1 => {
@@ -197,6 +307,8 @@ impl Acl {
 
     /// This is dangerous. The lifetime of all permsets and entries is bound to the liftime of the Acls raw_pointer.
     /// Since this operation might move the Acl to a bigger allocation this might introduce unsoundness.
+    ///
+    /// This should be prevented since we check in each call if is_valid is still true but it is pretty hacky.
     pub fn create_entry(&mut self) -> Result<AclEntry, AclError> {
         let mut entry_ptr = std::ptr::null_mut();
         let entry_ptr_ptr = &mut entry_ptr as *mut acl_sys::acl_entry_t;
@@ -292,11 +404,11 @@ impl Acl {
         }
     }
 
-    pub fn valid(&self) -> Result<bool, AclError> {
+    pub fn valid(&self) -> Result<Option<nix::errno::Errno>, AclError> {
         let result = unsafe { acl_sys::acl_valid(self.raw_ptr) };
         match result {
-            0 => Ok(true),
-            -1 => Ok(false),
+            0 => Ok(None),
+            -1 => Ok(Some(nix::errno::from_i32(nix::errno::errno()))),
             _ => Err(AclError::UnknownReturn(result)),
         }
     }
@@ -313,14 +425,14 @@ impl AclPermSet {
     pub fn check_valid(&self) -> Result<(), AclError> {
         if *self.is_valid.borrow() == true {
             Ok(())
-        }else{
+        } else {
             Err(AclError::WasMoved)
         }
     }
 
     pub fn add_perm(&mut self, perm: AclPerm) -> Result<(), AclError> {
         self.check_valid()?;
-        let result = unsafe { acl_sys::acl_add_perm(self.raw_ptr, perm.raw) };
+        let result = unsafe { acl_sys::acl_add_perm(self.raw_ptr, perm.to_raw()) };
         match result {
             0 => Ok(()),
             -1 => {
@@ -333,7 +445,7 @@ impl AclPermSet {
 
     pub fn delete_perms(&mut self, perm: AclPerm) -> Result<(), AclError> {
         self.check_valid()?;
-        let result = unsafe { acl_sys::acl_delete_perms(self.raw_ptr, perm.raw) };
+        let result = unsafe { acl_sys::acl_delete_perms(self.raw_ptr, perm.to_raw()) };
         match result {
             0 => Ok(()),
             -1 => {
@@ -362,7 +474,7 @@ impl AclEntry {
     pub fn check_valid(&self) -> Result<(), AclError> {
         if *self.is_valid.borrow() == true {
             Ok(())
-        }else{
+        } else {
             Err(AclError::WasMoved)
         }
     }
@@ -380,18 +492,17 @@ impl AclEntry {
         }
     }
 
-    pub fn get_permset(&self) -> Result<Option<AclPermSet>, AclError> {
+    pub fn get_permset(&self) -> Result<AclPermSet, AclError> {
         self.check_valid()?;
         let mut permset_ptr = std::ptr::null_mut();
         let permset_ptr_ptr = &mut permset_ptr as *mut acl_sys::acl_entry_t;
         let result = unsafe { acl_sys::acl_get_permset(self.raw_ptr, permset_ptr_ptr) };
 
         match result {
-            0 => Ok(None),
-            1 => Ok(Some(AclPermSet {
+            0 => Ok(AclPermSet {
                 raw_ptr: permset_ptr,
                 is_valid: self.is_valid.clone(),
-            })),
+            }),
             -1 => {
                 let errno = nix::errno::errno();
                 Err(AclError::Errno(nix::errno::from_i32(errno)))
@@ -421,7 +532,7 @@ impl AclEntry {
         let result = unsafe { acl_sys::acl_get_tag_type(self.raw_ptr, raw_ptr) };
 
         match result {
-            0 => Ok(AclTag { raw }),
+            0 => Ok(AclTag::from_raw(raw)),
             -1 => {
                 let errno = nix::errno::errno();
                 Err(AclError::Errno(nix::errno::from_i32(errno)))
@@ -432,7 +543,7 @@ impl AclEntry {
 
     pub fn set_tag_type(&mut self, tag_type: &AclTag) -> Result<(), AclError> {
         self.check_valid()?;
-        let result = unsafe { acl_sys::acl_set_tag_type(self.raw_ptr, tag_type.raw) };
+        let result = unsafe { acl_sys::acl_set_tag_type(self.raw_ptr, tag_type.to_raw()) };
 
         match result {
             0 => Ok(()),
