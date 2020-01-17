@@ -78,4 +78,42 @@ impl Acl {
             _ => Err(AclError::UnknownReturn(result)),
         }
     }
+
+    /// Use with care. Acl may not be used after this.
+    /// This will also be called when dropped so maybe just let drop handle this
+    pub fn free(mut self) -> Result<(), (Self, AclError)> {
+        let result = unsafe { acl_sys::acl_free(self.raw_ptr) };
+        match result {
+            0 => {
+                self.raw_ptr = std::ptr::null_mut();
+                Ok(())
+            }
+            -1 => {
+                let errno = nix::errno::errno();
+                Err((self, AclError::Errno(nix::errno::from_i32(errno))))
+            }
+            _ => Err((self, AclError::UnknownReturn(result))),
+        }
+    }
+}
+
+impl Drop for Acl {
+    fn drop(&mut self) {
+        unsafe { acl_sys::acl_free(self.raw_ptr) };
+        self.raw_ptr = std::ptr::null_mut();
+    }
+}
+
+impl AclPermSet {
+    pub fn add_perm(&mut self, perm: AclPerm) -> Result<(), AclError> {
+        let result = unsafe { acl_sys::acl_add_perm(self.raw_ptr, perm.raw) };
+        match result {
+            0 => Ok(()),
+            -1 => {
+                let errno = nix::errno::errno();
+                Err(AclError::Errno(nix::errno::from_i32(errno)))
+            }
+            _ => Err(AclError::UnknownReturn(result)),
+        }
+    }
 }
