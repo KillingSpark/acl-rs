@@ -3,6 +3,8 @@ name = "acl-rs"
 version = "0.1.0"
 authors = ["Moritz Borcherding <moritz.borcherding@web.de>"]
 edition = "2018"
+description = "A safe rust wrapper around the acl-sys crate"
+license = "LGPL2.1"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
