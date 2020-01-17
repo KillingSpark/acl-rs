@@ -30,8 +30,26 @@ pub struct Acl {
     raw_ptr: acl_sys::acl_t,
 }
 
+#[derive(Clone, Copy, Debug)]
 pub enum AclError {
-    InitFailed(i32),
+    Errno(nix::errno::Errno),
+    UnknownReturn(i32),
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum EntryId {
+    NextEntry,
+    FirstEntry,
+}
+
+impl EntryId {
+    fn to_raw(&self) -> i32 {
+        match self {
+            // TODO check if thats the same for bsds
+            EntryId::NextEntry => 1,
+            EntryId::FirstEntry => 0,
+        }
+    }
 }
 
 impl Acl {
@@ -39,9 +57,25 @@ impl Acl {
         let raw_ptr = unsafe { acl_sys::acl_init(count as i32) };
         if raw_ptr.is_null() {
             let errno = nix::errno::errno();
-            Err(AclError::InitFailed(errno))
+            Err(AclError::Errno(nix::errno::from_i32(errno)))
         } else {
             Ok(Acl { raw_ptr })
+        }
+    }
+
+    pub fn get_entry(&self, id: &EntryId) -> Result<Option<AclEntry>, AclError> {
+        let mut entry_ptr = std::ptr::null_mut();
+        let entry_ptr_ptr = &mut entry_ptr as *mut acl_sys::acl_entry_t;
+        let result = unsafe { acl_sys::acl_get_entry(self.raw_ptr, id.to_raw(), entry_ptr_ptr) };
+
+        match result {
+            0 => Ok(None),
+            1 => Ok(Some(AclEntry { raw_ptr: entry_ptr })),
+            -1 => {
+                let errno = nix::errno::errno();
+                Err(AclError::Errno(nix::errno::from_i32(errno)))
+            }
+            _ => Err(AclError::UnknownReturn(result)),
         }
     }
 }
