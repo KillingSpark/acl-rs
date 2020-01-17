@@ -63,6 +63,41 @@ impl Acl {
         }
     }
 
+    pub fn from_text(text: &str) -> Result<Self, AclError> {
+        let text_i8 = text.bytes().map(|x| x as i8).collect::<Vec<_>>();
+        let raw_ptr = unsafe { acl_sys::acl_from_text(text_i8.as_ptr()) };
+        if raw_ptr.is_null() {
+            let errno = nix::errno::errno();
+            Err(AclError::Errno(nix::errno::from_i32(errno)))
+        } else {
+            Ok(Acl { raw_ptr })
+        }
+    }
+
+    pub fn for_fd(fd: i32) -> Result<Self, AclError> {
+        let raw_ptr = unsafe { acl_sys::acl_get_fd(fd) };
+        if raw_ptr.is_null() {
+            let errno = nix::errno::errno();
+            Err(AclError::Errno(nix::errno::from_i32(errno)))
+        } else {
+            Ok(Acl { raw_ptr })
+        }
+    }
+
+    pub fn for_file(file_path: &std::path::PathBuf, typ: AclType) -> Result<Self, AclError> {
+        use std::os::unix::ffi::OsStrExt;
+        let path_bytes = file_path.as_os_str().as_bytes().to_vec();
+        let path_i8 = path_bytes.into_iter().map(|x| x as i8).collect::<Vec<_>>();
+        
+        let raw_ptr = unsafe { acl_sys::acl_get_file(path_i8.as_ptr(), typ.raw) };
+        if raw_ptr.is_null() {
+            let errno = nix::errno::errno();
+            Err(AclError::Errno(nix::errno::from_i32(errno)))
+        } else {
+            Ok(Acl { raw_ptr })
+        }
+    }
+
     pub fn get_entry(&self, id: &EntryId) -> Result<Option<AclEntry>, AclError> {
         let mut entry_ptr = std::ptr::null_mut();
         let entry_ptr_ptr = &mut entry_ptr as *mut acl_sys::acl_entry_t;
@@ -136,6 +171,17 @@ impl Acl {
             _ => Err(AclError::UnknownReturn(result)),
         }
     }
+
+    pub fn dup(&self) -> Result<Acl, AclError> {
+        let new_acl = unsafe { acl_sys::acl_dup(self.raw_ptr) };
+
+        if new_acl.is_null() {
+            let errno = nix::errno::errno();
+            Err(AclError::Errno(nix::errno::from_i32(errno)))
+        } else {
+            Ok(Acl { raw_ptr: new_acl })
+        }
+    }
 }
 
 impl Drop for Acl {
@@ -169,7 +215,6 @@ impl AclPermSet {
             _ => Err(AclError::UnknownReturn(result)),
         }
     }
-    
 
     pub fn clear_perms(&mut self) -> Result<(), AclError> {
         let result = unsafe { acl_sys::acl_clear_perms(self.raw_ptr) };
@@ -189,6 +234,22 @@ impl AclEntry {
         let result = unsafe { acl_sys::acl_copy_entry(dest.raw_ptr, src.raw_ptr) };
         match result {
             0 => Ok(()),
+            -1 => {
+                let errno = nix::errno::errno();
+                Err(AclError::Errno(nix::errno::from_i32(errno)))
+            }
+            _ => Err(AclError::UnknownReturn(result)),
+        }
+    }
+
+    pub fn get_permset(&self) -> Result<Option<AclPermSet>, AclError> {
+        let mut permset_ptr = std::ptr::null_mut();
+        let permset_ptr_ptr = &mut permset_ptr as *mut acl_sys::acl_entry_t;
+        let result = unsafe { acl_sys::acl_get_permset(self.raw_ptr, permset_ptr_ptr) };
+
+        match result {
+            0 => Ok(None),
+            1 => Ok(Some(AclPermSet { raw_ptr: permset_ptr })),
             -1 => {
                 let errno = nix::errno::errno();
                 Err(AclError::Errno(nix::errno::from_i32(errno)))
