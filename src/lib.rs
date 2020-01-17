@@ -79,6 +79,21 @@ impl Acl {
         }
     }
 
+    pub fn create_entry(&mut self) -> Result<AclEntry, AclError> {
+        let mut entry_ptr = std::ptr::null_mut();
+        let entry_ptr_ptr = &mut entry_ptr as *mut acl_sys::acl_entry_t;
+        let result = unsafe { acl_sys::acl_create_entry(&mut self.raw_ptr, entry_ptr_ptr) };
+
+        match result {
+            0 => Ok(AclEntry { raw_ptr: entry_ptr }),
+            -1 => {
+                let errno = nix::errno::errno();
+                Err(AclError::Errno(nix::errno::from_i32(errno)))
+            }
+            _ => Err(AclError::UnknownReturn(result)),
+        }
+    }
+
     /// Use with care. Acl may not be used after this.
     /// This will also be called when dropped so maybe just let drop handle this
     pub fn free(mut self) -> Result<(), (Self, AclError)> {
@@ -93,6 +108,18 @@ impl Acl {
                 Err((self, AclError::Errno(nix::errno::from_i32(errno))))
             }
             _ => Err((self, AclError::UnknownReturn(result))),
+        }
+    }
+
+    pub fn calc_mask(&mut self) -> Result<(), AclError> {
+        let result = unsafe { acl_sys::acl_calc_mask(&mut self.raw_ptr) };
+        match result {
+            0 => Ok(()),
+            -1 => {
+                let errno = nix::errno::errno();
+                Err(AclError::Errno(nix::errno::from_i32(errno)))
+            }
+            _ => Err(AclError::UnknownReturn(result)),
         }
     }
 }
@@ -115,5 +142,48 @@ impl AclPermSet {
             }
             _ => Err(AclError::UnknownReturn(result)),
         }
+    }
+
+    pub fn clear_perms(&mut self) -> Result<(), AclError> {
+        let result = unsafe { acl_sys::acl_clear_perms(self.raw_ptr) };
+        match result {
+            0 => Ok(()),
+            -1 => {
+                let errno = nix::errno::errno();
+                Err(AclError::Errno(nix::errno::from_i32(errno)))
+            }
+            _ => Err(AclError::UnknownReturn(result)),
+        }
+    }
+}
+
+impl AclEntry {
+    pub fn copy_to(dest: &mut AclEntry, src: &AclEntry) -> Result<(), AclError> {
+        let result = unsafe { acl_sys::acl_copy_entry(dest.raw_ptr, src.raw_ptr) };
+        match result {
+            0 => Ok(()),
+            -1 => {
+                let errno = nix::errno::errno();
+                Err(AclError::Errno(nix::errno::from_i32(errno)))
+            }
+            _ => Err(AclError::UnknownReturn(result)),
+        }
+    }
+}
+
+pub fn delete_def_file(file_path: &std::path::PathBuf) -> Result<(), AclError> {
+    use std::os::unix::ffi::OsStrExt;
+    let path_bytes = file_path.as_os_str().as_bytes().to_vec();
+    let path_i8 = path_bytes.into_iter().map(|x| x as i8).collect::<Vec<_>>();
+    let path_ptr = path_i8.as_ptr();
+
+    let result = unsafe { acl_sys::acl_delete_def_file(path_ptr) };
+    match result {
+        0 => Ok(()),
+        -1 => {
+            let errno = nix::errno::errno();
+            Err(AclError::Errno(nix::errno::from_i32(errno)))
+        }
+        _ => Err(AclError::UnknownReturn(result)),
     }
 }
