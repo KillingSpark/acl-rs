@@ -94,6 +94,20 @@ impl Acl {
         }
     }
 
+    /// consumes the entry but returns it if an error occurs
+    pub fn delete_entry(&mut self, entry: AclEntry) -> Result<(), (AclEntry, AclError)> {
+        let result = unsafe { acl_sys::acl_delete_entry(self.raw_ptr, entry.raw_ptr) };
+
+        match result {
+            0 => Ok(()),
+            -1 => {
+                let errno = nix::errno::errno();
+                Err((entry, AclError::Errno(nix::errno::from_i32(errno))))
+            }
+            _ => Err((entry, AclError::UnknownReturn(result))),
+        }
+    }
+
     /// Use with care. Acl may not be used after this.
     /// This will also be called when dropped so maybe just let drop handle this
     pub fn free(mut self) -> Result<(), (Self, AclError)> {
@@ -143,6 +157,19 @@ impl AclPermSet {
             _ => Err(AclError::UnknownReturn(result)),
         }
     }
+
+    pub fn delete_perms(&mut self, perm: AclPerm) -> Result<(), AclError> {
+        let result = unsafe { acl_sys::acl_delete_perms(self.raw_ptr, perm.raw) };
+        match result {
+            0 => Ok(()),
+            -1 => {
+                let errno = nix::errno::errno();
+                Err(AclError::Errno(nix::errno::from_i32(errno)))
+            }
+            _ => Err(AclError::UnknownReturn(result)),
+        }
+    }
+    
 
     pub fn clear_perms(&mut self) -> Result<(), AclError> {
         let result = unsafe { acl_sys::acl_clear_perms(self.raw_ptr) };
