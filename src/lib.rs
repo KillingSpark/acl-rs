@@ -11,21 +11,36 @@ mod tests {
         entry.set_tag_type(&tag).unwrap();
         let mut permset = entry.get_permset().unwrap();
         permset.add_perm(AclPerm::Read).unwrap();
-
         assert_eq!(entry.get_tag_type().unwrap(), tag);
+
         let mut entry = acl.create_entry().unwrap();
         let tag = AclTag::GroupObj;
         entry.set_tag_type(&tag).unwrap();
         let mut permset = entry.get_permset().unwrap();
         permset.add_perm(AclPerm::Write).unwrap();
-
         assert_eq!(entry.get_tag_type().unwrap(), tag);
+
         let mut entry = acl.create_entry().unwrap();
         let tag = AclTag::Other;
         entry.set_tag_type(&tag).unwrap();
         let mut permset = entry.get_permset().unwrap();
         permset.add_perm(AclPerm::Execute).unwrap();
+        assert_eq!(entry.get_tag_type().unwrap(), tag);
 
+        let mut entry = acl.create_entry().unwrap();
+        let tag = AclTag::User;
+        entry.set_tag_type(&tag).unwrap();
+        entry
+            .set_qualifier(&Qualifier::User(nix::unistd::Uid::from_raw(0)))
+            .unwrap();
+        let mut permset = entry.get_permset().unwrap();
+        permset.add_perm(AclPerm::Execute).unwrap();
+        permset.add_perm(AclPerm::Read).unwrap();
+        permset.add_perm(AclPerm::Write).unwrap();
+        assert_eq!(entry.get_tag_type().unwrap(), tag);
+
+        // mask is necessary when User/Group is set
+        acl.calc_mask().unwrap();
         assert_eq!(entry.get_tag_type().unwrap(), tag);
         assert_eq!(acl.valid().unwrap(), None);
 
@@ -37,22 +52,31 @@ mod tests {
 
         let new_acl = Acl::for_file(&path, &AclType::TypeAccess).unwrap();
         std::fs::remove_file(&path).unwrap();
+        let new_alc_str = String::from_utf8(new_acl.to_text().unwrap()).unwrap();
+        assert_eq!(
+            "user::r--\nuser:root:rwx\ngroup::-w-\nmask::rwx\nother::--x\n",
+            &new_alc_str
+        );
 
+        // There are 5 entries: userobj, user, group, other, mask
+        // TODO check those permsets. I dont know how that works. Linux has an extension "acl_get_perm" but thats not exposed by acl_sys?
         let entry1 = new_acl.get_entry(&EntryId::FirstEntry).unwrap().unwrap();
         let _permset1 = entry1.get_permset().unwrap();
-        // TODO check those permsets. I dont know how that works. Linux has an extension "acl_get_perm" but thats not exposed by acl_sys?
-        
+
         let entry2 = new_acl.get_entry(&EntryId::NextEntry).unwrap().unwrap();
         let _permset2 = entry2.get_permset().unwrap();
 
         let entry3 = new_acl.get_entry(&EntryId::NextEntry).unwrap().unwrap();
         let _permset3 = entry3.get_permset().unwrap();
 
+        let entry4 = new_acl.get_entry(&EntryId::NextEntry).unwrap().unwrap();
+        let _permset4 = entry4.get_permset().unwrap();
+
+        let entry5 = new_acl.get_entry(&EntryId::NextEntry).unwrap().unwrap();
+        let _permset5 = entry5.get_permset().unwrap();
+
         let err_entry = new_acl.get_entry(&EntryId::NextEntry).unwrap();
         assert_eq!(err_entry, None);
-
-        let new_alc_str = String::from_utf8(new_acl.to_text().unwrap()).unwrap();
-        assert_eq!("user::r--\ngroup::-w-\nother::--x\n", &new_alc_str);
     }
 }
 
@@ -545,6 +569,55 @@ impl AclEntry {
         self.check_valid()?;
         let result = unsafe { acl_sys::acl_set_tag_type(self.raw_ptr, tag_type.to_raw()) };
 
+        match result {
+            0 => Ok(()),
+            -1 => {
+                let errno = nix::errno::errno();
+                Err(AclError::Errno(nix::errno::from_i32(errno)))
+            }
+            _ => Err(AclError::UnknownReturn(result)),
+        }
+    }
+
+    pub fn get_qualifier(&self) -> Result<Qualifier, AclError> {
+        self.check_valid()?;
+        match self.get_tag_type()? {
+            AclTag::User => {
+                let raw_ptr = unsafe { acl_sys::acl_get_qualifier(self.raw_ptr) };
+                if raw_ptr.is_null() {
+                    let errno = nix::errno::errno();
+                    Err(AclError::Errno(nix::errno::from_i32(errno)))
+                } else {
+                    let raw: u32 = unsafe { *(std::mem::transmute::<_, *const u32>(raw_ptr)) };
+                    Ok(Qualifier::User(nix::unistd::Uid::from_raw(raw)))
+                }
+            }
+            AclTag::Group => {
+                let raw_ptr = unsafe { acl_sys::acl_get_qualifier(self.raw_ptr) };
+                if raw_ptr.is_null() {
+                    let errno = nix::errno::errno();
+                    Err(AclError::Errno(nix::errno::from_i32(errno)))
+                } else {
+                    let raw: u32 = unsafe { *(std::mem::transmute::<_, *const u32>(raw_ptr)) };
+                    Ok(Qualifier::User(nix::unistd::Uid::from_raw(raw)))
+                }
+            }
+            _ => return Err(AclError::Errno(nix::errno::Errno::EINVAL)),
+        }
+    }
+
+    pub fn set_qualifier(&mut self, qual: &Qualifier) -> Result<(), AclError> {
+        self.check_valid()?;
+        let result = match qual {
+            Qualifier::User(id) => {
+                let raw = id.as_raw();
+                let raw_ptr = &raw;
+                unsafe { acl_sys::acl_set_qualifier(self.raw_ptr, std::mem::transmute(raw_ptr)) }
+            }
+            Qualifier::Group(id) => unsafe {
+                acl_sys::acl_set_qualifier(self.raw_ptr, std::mem::transmute(&id.as_raw()))
+            },
+        };
         match result {
             0 => Ok(()),
             -1 => {
