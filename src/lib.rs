@@ -74,6 +74,26 @@ impl Acl {
         }
     }
 
+    pub fn to_text(&self) -> Result<Vec<u8>, AclError> {
+        let mut len = 0;
+        let raw_ptr = unsafe { acl_sys::acl_to_text(self.raw_ptr, &mut len) };
+
+        // TODO free raw_ptr
+        if raw_ptr.is_null() {
+            let errno = nix::errno::errno();
+            Err(AclError::Errno(nix::errno::from_i32(errno)))
+        } else {
+            let mut text_bytes = Vec::new();
+            let mut iter_ptr = raw_ptr;
+            for _idx in 0..len {
+                let byte = unsafe { *iter_ptr } as u8;
+                text_bytes.push(byte);
+                iter_ptr = unsafe { iter_ptr.add(1) };
+            }
+            Ok(text_bytes)
+        }
+    }
+
     pub fn for_fd(fd: i32) -> Result<Self, AclError> {
         let raw_ptr = unsafe { acl_sys::acl_get_fd(fd) };
         if raw_ptr.is_null() {
@@ -109,7 +129,11 @@ impl Acl {
         }
     }
 
-    pub fn set_for_file(&self, file_path: &std::path::PathBuf, typ: &AclType) -> Result<(), AclError> {
+    pub fn set_for_file(
+        &self,
+        file_path: &std::path::PathBuf,
+        typ: &AclType,
+    ) -> Result<(), AclError> {
         use std::os::unix::ffi::OsStrExt;
         let path_bytes = file_path.as_os_str().as_bytes().to_vec();
         let path_i8 = path_bytes.into_iter().map(|x| x as i8).collect::<Vec<_>>();
@@ -208,6 +232,26 @@ impl Acl {
             Ok(Acl { raw_ptr: new_acl })
         }
     }
+
+    pub fn size(&self) -> Result<usize, AclError> {
+        let result = unsafe { acl_sys::acl_size(self.raw_ptr) };
+        match result {
+            -1 => {
+                let errno = nix::errno::errno();
+                Err(AclError::Errno(nix::errno::from_i32(errno)))
+            }
+            _ => Ok(result as usize),
+        }
+    }
+
+    pub fn valid(&self) -> Result<bool, AclError> {
+        let result = unsafe { acl_sys::acl_valid(self.raw_ptr) };
+        match result {
+            0 => Ok(true),
+            -1 => Ok(false),
+            _ => Err(AclError::UnknownReturn(result)),
+        }
+    }
 }
 
 impl Drop for Acl {
@@ -286,6 +330,19 @@ impl AclEntry {
         }
     }
 
+    pub fn set_permset(&mut self, permset: &AclPermSet) -> Result<(), AclError> {
+        let result = unsafe { acl_sys::acl_set_permset(self.raw_ptr, permset.raw_ptr) };
+
+        match result {
+            0 => Ok(()),
+            -1 => {
+                let errno = nix::errno::errno();
+                Err(AclError::Errno(nix::errno::from_i32(errno)))
+            }
+            _ => Err(AclError::UnknownReturn(result)),
+        }
+    }
+
     pub fn get_tag_type(&self) -> Result<AclTag, AclError> {
         let mut raw = 0 as acl_sys::acl_tag_t;
         let raw_ptr = &mut raw as *mut acl_sys::acl_tag_t;
@@ -293,6 +350,19 @@ impl AclEntry {
 
         match result {
             0 => Ok(AclTag { raw }),
+            -1 => {
+                let errno = nix::errno::errno();
+                Err(AclError::Errno(nix::errno::from_i32(errno)))
+            }
+            _ => Err(AclError::UnknownReturn(result)),
+        }
+    }
+
+    pub fn set_tag_type(&mut self, tag_type: &AclTag) -> Result<(), AclError> {
+        let result = unsafe { acl_sys::acl_set_tag_type(self.raw_ptr, tag_type.raw) };
+
+        match result {
+            0 => Ok(()),
             -1 => {
                 let errno = nix::errno::errno();
                 Err(AclError::Errno(nix::errno::from_i32(errno)))
