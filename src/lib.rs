@@ -11,6 +11,8 @@ extern crate nix;
 
 pub struct AclEntry {
     raw_ptr: acl_sys::acl_entry_t,
+    // if the parent acl was moved this has to become invalid
+    is_valid: std::cell::RefCell<bool>,
 }
 
 pub struct AclPerm {
@@ -18,6 +20,8 @@ pub struct AclPerm {
 }
 pub struct AclPermSet {
     raw_ptr: acl_sys::acl_permset_t,
+    // if the parent acl was moved this has to become invalid
+    is_valid: std::cell::RefCell<bool>,
 }
 
 pub struct AclTag {
@@ -28,18 +32,28 @@ pub struct AclType {
 }
 pub struct Acl {
     raw_ptr: acl_sys::acl_t,
+
+    // if the acl is moved in create_entry this is set to true
+    // and replaced with a new RefCell
+    is_valid: std::cell::RefCell<bool>,
 }
 
 #[derive(Clone, Copy, Debug)]
 pub enum AclError {
     Errno(nix::errno::Errno),
     UnknownReturn(i32),
+    WasMoved,
 }
 
 #[derive(Clone, Copy, Debug)]
 pub enum EntryId {
     NextEntry,
     FirstEntry,
+}
+
+pub enum Qualifier {
+    User(nix::unistd::Uid),
+    Group(nix::unistd::Gid),
 }
 
 impl EntryId {
@@ -59,7 +73,10 @@ impl Acl {
             let errno = nix::errno::errno();
             Err(AclError::Errno(nix::errno::from_i32(errno)))
         } else {
-            Ok(Acl { raw_ptr })
+            Ok(Acl {
+                raw_ptr,
+                is_valid: std::cell::RefCell::new(true),
+            })
         }
     }
 
@@ -70,26 +87,31 @@ impl Acl {
             let errno = nix::errno::errno();
             Err(AclError::Errno(nix::errno::from_i32(errno)))
         } else {
-            Ok(Acl { raw_ptr })
+            Ok(Acl {
+                raw_ptr,
+                is_valid: std::cell::RefCell::new(true),
+            })
         }
     }
 
     pub fn to_text(&self) -> Result<Vec<u8>, AclError> {
         let mut len = 0;
-        let raw_ptr = unsafe { acl_sys::acl_to_text(self.raw_ptr, &mut len) };
+        let raw_text = unsafe { acl_sys::acl_to_text(self.raw_ptr, &mut len) };
 
-        // TODO free raw_ptr
-        if raw_ptr.is_null() {
+        if raw_text.is_null() {
             let errno = nix::errno::errno();
             Err(AclError::Errno(nix::errno::from_i32(errno)))
         } else {
             let mut text_bytes = Vec::new();
-            let mut iter_ptr = raw_ptr;
+            let mut iter_ptr = raw_text;
             for _idx in 0..len {
                 let byte = unsafe { *iter_ptr } as u8;
                 text_bytes.push(byte);
                 iter_ptr = unsafe { iter_ptr.add(1) };
             }
+
+            unsafe { acl_sys::acl_free(std::mem::transmute(raw_text)) };
+
             Ok(text_bytes)
         }
     }
@@ -100,7 +122,10 @@ impl Acl {
             let errno = nix::errno::errno();
             Err(AclError::Errno(nix::errno::from_i32(errno)))
         } else {
-            Ok(Acl { raw_ptr })
+            Ok(Acl {
+                raw_ptr,
+                is_valid: std::cell::RefCell::new(true),
+            })
         }
     }
 
@@ -125,7 +150,10 @@ impl Acl {
             let errno = nix::errno::errno();
             Err(AclError::Errno(nix::errno::from_i32(errno)))
         } else {
-            Ok(Acl { raw_ptr })
+            Ok(Acl {
+                raw_ptr,
+                is_valid: std::cell::RefCell::new(true),
+            })
         }
     }
 
@@ -155,7 +183,10 @@ impl Acl {
 
         match result {
             0 => Ok(None),
-            1 => Ok(Some(AclEntry { raw_ptr: entry_ptr })),
+            1 => Ok(Some(AclEntry {
+                raw_ptr: entry_ptr,
+                is_valid: self.is_valid.clone(),
+            })),
             -1 => {
                 let errno = nix::errno::errno();
                 Err(AclError::Errno(nix::errno::from_i32(errno)))
@@ -164,13 +195,27 @@ impl Acl {
         }
     }
 
+    /// This is dangerous. The lifetime of all permsets and entries is bound to the liftime of the Acls raw_pointer.
+    /// Since this operation might move the Acl to a bigger allocation this might introduce unsoundness.
     pub fn create_entry(&mut self) -> Result<AclEntry, AclError> {
         let mut entry_ptr = std::ptr::null_mut();
         let entry_ptr_ptr = &mut entry_ptr as *mut acl_sys::acl_entry_t;
+
+        let acl_ptr_before = self.raw_ptr;
         let result = unsafe { acl_sys::acl_create_entry(&mut self.raw_ptr, entry_ptr_ptr) };
 
+        if !acl_ptr_before.eq(&self.raw_ptr) {
+            // The acl was moved. Need to invalidate all entries/permsets
+            *self.is_valid.borrow_mut() = false;
+            // The new acl is obviously valid again
+            self.is_valid = std::cell::RefCell::new(true);
+        }
+
         match result {
-            0 => Ok(AclEntry { raw_ptr: entry_ptr }),
+            0 => Ok(AclEntry {
+                raw_ptr: entry_ptr,
+                is_valid: self.is_valid.clone(),
+            }),
             -1 => {
                 let errno = nix::errno::errno();
                 Err(AclError::Errno(nix::errno::from_i32(errno)))
@@ -229,7 +274,10 @@ impl Acl {
             let errno = nix::errno::errno();
             Err(AclError::Errno(nix::errno::from_i32(errno)))
         } else {
-            Ok(Acl { raw_ptr: new_acl })
+            Ok(Acl {
+                raw_ptr: new_acl,
+                is_valid: self.is_valid.clone(),
+            })
         }
     }
 
@@ -262,7 +310,16 @@ impl Drop for Acl {
 }
 
 impl AclPermSet {
+    pub fn check_valid(&self) -> Result<(), AclError> {
+        if *self.is_valid.borrow() == true {
+            Ok(())
+        }else{
+            Err(AclError::WasMoved)
+        }
+    }
+
     pub fn add_perm(&mut self, perm: AclPerm) -> Result<(), AclError> {
+        self.check_valid()?;
         let result = unsafe { acl_sys::acl_add_perm(self.raw_ptr, perm.raw) };
         match result {
             0 => Ok(()),
@@ -275,6 +332,7 @@ impl AclPermSet {
     }
 
     pub fn delete_perms(&mut self, perm: AclPerm) -> Result<(), AclError> {
+        self.check_valid()?;
         let result = unsafe { acl_sys::acl_delete_perms(self.raw_ptr, perm.raw) };
         match result {
             0 => Ok(()),
@@ -287,6 +345,7 @@ impl AclPermSet {
     }
 
     pub fn clear_perms(&mut self) -> Result<(), AclError> {
+        self.check_valid()?;
         let result = unsafe { acl_sys::acl_clear_perms(self.raw_ptr) };
         match result {
             0 => Ok(()),
@@ -300,8 +359,17 @@ impl AclPermSet {
 }
 
 impl AclEntry {
-    pub fn copy_to(dest: &mut AclEntry, src: &AclEntry) -> Result<(), AclError> {
-        let result = unsafe { acl_sys::acl_copy_entry(dest.raw_ptr, src.raw_ptr) };
+    pub fn check_valid(&self) -> Result<(), AclError> {
+        if *self.is_valid.borrow() == true {
+            Ok(())
+        }else{
+            Err(AclError::WasMoved)
+        }
+    }
+
+    pub fn copy_to(&self, dest: &mut AclEntry) -> Result<(), AclError> {
+        self.check_valid()?;
+        let result = unsafe { acl_sys::acl_copy_entry(dest.raw_ptr, self.raw_ptr) };
         match result {
             0 => Ok(()),
             -1 => {
@@ -313,6 +381,7 @@ impl AclEntry {
     }
 
     pub fn get_permset(&self) -> Result<Option<AclPermSet>, AclError> {
+        self.check_valid()?;
         let mut permset_ptr = std::ptr::null_mut();
         let permset_ptr_ptr = &mut permset_ptr as *mut acl_sys::acl_entry_t;
         let result = unsafe { acl_sys::acl_get_permset(self.raw_ptr, permset_ptr_ptr) };
@@ -321,6 +390,7 @@ impl AclEntry {
             0 => Ok(None),
             1 => Ok(Some(AclPermSet {
                 raw_ptr: permset_ptr,
+                is_valid: self.is_valid.clone(),
             })),
             -1 => {
                 let errno = nix::errno::errno();
@@ -331,6 +401,7 @@ impl AclEntry {
     }
 
     pub fn set_permset(&mut self, permset: &AclPermSet) -> Result<(), AclError> {
+        self.check_valid()?;
         let result = unsafe { acl_sys::acl_set_permset(self.raw_ptr, permset.raw_ptr) };
 
         match result {
@@ -344,6 +415,7 @@ impl AclEntry {
     }
 
     pub fn get_tag_type(&self) -> Result<AclTag, AclError> {
+        self.check_valid()?;
         let mut raw = 0 as acl_sys::acl_tag_t;
         let raw_ptr = &mut raw as *mut acl_sys::acl_tag_t;
         let result = unsafe { acl_sys::acl_get_tag_type(self.raw_ptr, raw_ptr) };
@@ -359,6 +431,7 @@ impl AclEntry {
     }
 
     pub fn set_tag_type(&mut self, tag_type: &AclTag) -> Result<(), AclError> {
+        self.check_valid()?;
         let result = unsafe { acl_sys::acl_set_tag_type(self.raw_ptr, tag_type.raw) };
 
         match result {
