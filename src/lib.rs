@@ -83,11 +83,14 @@ mod tests {
 extern crate acl_sys;
 extern crate nix;
 
+use std::cell::RefCell;
+use std::rc::Rc;
+
 #[derive(PartialEq, Eq, Debug)]
 pub struct AclEntry {
     raw_ptr: acl_sys::acl_entry_t,
     // if the parent acl was moved this has to become invalid
-    is_valid: std::cell::RefCell<bool>,
+    is_valid: Rc<RefCell<bool>>,
 }
 
 pub enum AclPerm {
@@ -109,7 +112,7 @@ impl AclPerm {
 pub struct AclPermSet {
     raw_ptr: acl_sys::acl_permset_t,
     // if the parent acl was moved this has to become invalid
-    is_valid: std::cell::RefCell<bool>,
+    is_valid: Rc<RefCell<bool>>,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
@@ -169,7 +172,7 @@ pub struct Acl {
 
     // if the acl is moved in create_entry this is set to true
     // and replaced with a new RefCell
-    is_valid: std::cell::RefCell<bool>,
+    is_valid: Rc<RefCell<bool>>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -209,7 +212,7 @@ impl Acl {
         } else {
             Ok(Acl {
                 raw_ptr,
-                is_valid: std::cell::RefCell::new(true),
+                is_valid: Rc::new(RefCell::new(true)),
             })
         }
     }
@@ -223,7 +226,7 @@ impl Acl {
         } else {
             Ok(Acl {
                 raw_ptr,
-                is_valid: std::cell::RefCell::new(true),
+                is_valid: Rc::new(RefCell::new(true)),
             })
         }
     }
@@ -258,7 +261,7 @@ impl Acl {
         } else {
             Ok(Acl {
                 raw_ptr,
-                is_valid: std::cell::RefCell::new(true),
+                is_valid: Rc::new(RefCell::new(true)),
             })
         }
     }
@@ -286,7 +289,7 @@ impl Acl {
         } else {
             Ok(Acl {
                 raw_ptr,
-                is_valid: std::cell::RefCell::new(true),
+                is_valid: Rc::new(RefCell::new(true)),
             })
         }
     }
@@ -344,7 +347,7 @@ impl Acl {
             // The acl was moved. Need to invalidate all entries/permsets
             *self.is_valid.borrow_mut() = false;
             // The new acl is obviously valid again
-            self.is_valid = std::cell::RefCell::new(true);
+            self.is_valid = Rc::new(RefCell::new(true));
         }
 
         match result {
